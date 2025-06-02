@@ -8,7 +8,8 @@ let isInitialized = false;
 const banPath = [
   'login', 'admin', '__total_count',
   // static files
-  'admin.html', 'login.html',
+  'admin.html',
+  // 'login.html',
   'daisyui@5.css', 'tailwindcss@4.js',
   'qr-code-styling.js', 'zxing.js',
   'robots.txt', 'wechat.svg',
@@ -184,28 +185,38 @@ async function updateMapping(originalPath, newPath, target, name, expiry, enable
   ).run();
 }
 
-async function getExpiringMappings() {
-  // 获取今天的日期（设置为今天的23:59:59）
-  const today = new Date();
-  today.setHours(23, 59, 59, 999);
-  const now = today.toISOString();
-  
+async function getExpiringMappings(userId) {
+  // 获取当前时间（使用本地时间）
+  const now = new Date();
+  console.log('当前时间:', now.toISOString());
+
   // 获取今天的开始时间（00:00:00）
-  const todayStart = new Date();
+  const todayStart = new Date(now);
   todayStart.setHours(0, 0, 0, 0);
-  const dayStart = todayStart.toISOString();
+  console.log('今天开始时间:', todayStart.toISOString());
+
+  // 获取3天后的结束时间（23:59:59）
+  const threeDaysLater = new Date(todayStart);
+  threeDaysLater.setDate(todayStart.getDate() + 3);
+  threeDaysLater.setHours(23, 59, 59, 999);
+  console.log('3天后结束时间:', threeDaysLater.toISOString());
+
+  // 先检查用户是否存在
+  const userCheck = await DB.prepare(
+    'SELECT id FROM users WHERE id = ?'
+  ).bind(userId).first();
   
-  // 修改为3天后的23:59:59
-  const threeDaysFromNow = new Date(todayStart);
-  threeDaysFromNow.setDate(todayStart.getDate() + 3);
-  threeDaysFromNow.setHours(23, 59, 59, 999);
-  const threeDaysLater = threeDaysFromNow.toISOString();
+  console.log('用户检查结果:', userCheck);
+
+  if (!userCheck) {
+    throw new Error('用户不存在');
+  }
 
   // 使用单个查询获取所有过期和即将过期的映射
-  const results = await DB.prepare(`
+  const query = `
     WITH categorized_mappings AS (
       SELECT 
-        path, name, target, expiry, enabled, isWechat, qrCodeData,
+        path, name, target, expiry, enabled, is_wechat, qr_code_data,
         CASE 
           WHEN datetime(expiry) < datetime(?) THEN 'expired'
           WHEN datetime(expiry) <= datetime(?) THEN 'expiring'
@@ -214,35 +225,71 @@ async function getExpiringMappings() {
       WHERE expiry IS NOT NULL 
         AND datetime(expiry) <= datetime(?) 
         AND enabled = 1
+        AND user_id = ?
     )
     SELECT * FROM categorized_mappings
     ORDER BY expiry ASC
-  `).bind(dayStart, threeDaysLater, threeDaysLater).all();
+  `;
+
+  console.log('SQL查询:', query);
+  console.log('查询参数:', [
+    todayStart.toISOString(),
+    threeDaysLater.toISOString(),
+    threeDaysLater.toISOString(),
+    userId
+  ]);
+
+  const results = await DB.prepare(query).bind(
+    todayStart.toISOString(),
+    threeDaysLater.toISOString(),
+    threeDaysLater.toISOString(),
+    userId
+  ).all();
+
+  console.log('查询结果:', results);
 
   const mappings = {
     expiring: [],
     expired: []
   };
   
-  for (const row of results.results) {
-    const mapping = {
-      path: row.path,
-      name: row.name,
-      target: row.target,
-      expiry: row.expiry,
-      enabled: row.enabled === 1,
-      isWechat: row.isWechat === 1,
-      qrCodeData: row.qrCodeData
-    };
+  if (results.results) {
+    for (const row of results.results) {
+      const mapping = {
+        path: row.path,
+        name: row.name,
+        target: row.target,
+        expiry: row.expiry,
+        enabled: row.enabled === 1,
+        isWechat: row.is_wechat === 1,
+        qrCodeData: row.qr_code_data
+      };
 
-    if (row.status === 'expired') {
-      mappings.expired.push(mapping);
-    } else {
-      mappings.expiring.push(mapping);
+      // 打印每个映射的过期时间和状态
+      console.log('映射:', {
+        path: mapping.path,
+        expiry: mapping.expiry,
+        status: row.status,
+        isExpired: new Date(mapping.expiry) < todayStart
+      });
+
+      if (row.status === 'expired') {
+        mappings.expired.push(mapping);
+      } else {
+        mappings.expiring.push(mapping);
+      }
     }
   }
 
-  return mappings;
+  console.log('处理后的映射:', mappings);
+  
+  // 确保返回正确的数据格式
+  const response = {
+    expiring: mappings.expiring || [],
+    expired: mappings.expired || []
+  };
+  
+  return response;
 }
 
 // 添加新的批量清理过期映射的函数
@@ -372,7 +419,8 @@ export default {
 
     // 根目录直接跳转到管理后台
     if (path === '') {
-      return Response.redirect(url.origin + '/admin.html', 302);
+      const response = await env.ASSETS.fetch(new Request(url.origin + '/admin.html'));
+      return response;
     }
 
     // API 路由处理
@@ -642,6 +690,133 @@ export default {
         }
 
         return new Response(JSON.stringify({ success: true }));
+      }
+
+      // 获取过期和即将过期的映射
+      if (path === 'api/expiring-mappings' && request.method === 'GET') {
+        try {
+          console.log('开始获取过期映射，用户ID:', userId);
+          
+          // 获取当前时间（使用本地时间）
+          const now = new Date();
+          console.log('当前时间:', now.toISOString());
+
+          // 获取今天的开始时间（00:00:00）
+          const todayStart = new Date(now);
+          todayStart.setHours(0, 0, 0, 0);
+          console.log('今天开始时间:', todayStart.toISOString());
+
+          // 获取3天后的结束时间（23:59:59）
+          const threeDaysLater = new Date(todayStart);
+          threeDaysLater.setDate(todayStart.getDate() + 3);
+          threeDaysLater.setHours(23, 59, 59, 999);
+          console.log('3天后结束时间:', threeDaysLater.toISOString());
+
+          // 先检查用户是否存在
+          const userCheck = await DB.prepare(
+            'SELECT id FROM users WHERE id = ?'
+          ).bind(userId).first();
+          
+          console.log('用户检查结果:', userCheck);
+
+          if (!userCheck) {
+            throw new Error('用户不存在');
+          }
+
+          // 使用单个查询获取所有过期和即将过期的映射
+          const query = `
+            WITH categorized_mappings AS (
+              SELECT 
+                path, name, target, expiry, enabled, is_wechat, qr_code_data,
+                CASE 
+                  WHEN datetime(expiry) < datetime(?) THEN 'expired'
+                  WHEN datetime(expiry) <= datetime(?) THEN 'expiring'
+                END as status
+              FROM mappings 
+              WHERE expiry IS NOT NULL 
+                AND datetime(expiry) <= datetime(?) 
+                AND enabled = 1
+                AND user_id = ?
+            )
+            SELECT * FROM categorized_mappings
+            ORDER BY expiry ASC
+          `;
+
+          console.log('SQL查询:', query);
+          console.log('查询参数:', [
+            todayStart.toISOString(),
+            threeDaysLater.toISOString(),
+            threeDaysLater.toISOString(),
+            userId
+          ]);
+
+          const results = await DB.prepare(query).bind(
+            todayStart.toISOString(),
+            threeDaysLater.toISOString(),
+            threeDaysLater.toISOString(),
+            userId
+          ).all();
+
+          console.log('查询结果:', results);
+
+          const mappings = {
+            expiring: [],
+            expired: []
+          };
+          
+          if (results.results) {
+            for (const row of results.results) {
+              const mapping = {
+                path: row.path,
+                name: row.name,
+                target: row.target,
+                expiry: row.expiry,
+                enabled: row.enabled === 1,
+                isWechat: row.is_wechat === 1,
+                qrCodeData: row.qr_code_data
+              };
+
+              // 打印每个映射的过期时间和状态
+              console.log('映射:', {
+                path: mapping.path,
+                expiry: mapping.expiry,
+                status: row.status,
+                isExpired: new Date(mapping.expiry) < todayStart
+              });
+
+              if (row.status === 'expired') {
+                mappings.expired.push(mapping);
+              } else {
+                mappings.expiring.push(mapping);
+              }
+            }
+          }
+
+          console.log('处理后的映射:', mappings);
+          
+          // 确保返回正确的数据格式
+          const response = {
+            expiring: mappings.expiring || [],
+            expired: mappings.expired || []
+          };
+          
+          return new Response(JSON.stringify(response), {
+            headers: { 'Content-Type': 'application/json' }
+          });
+        } catch (error) {
+          console.error('获取过期映射失败:', error);
+          // 返回更详细的错误信息
+          return new Response(JSON.stringify({ 
+            error: '获取过期映射失败',
+            details: error.message,
+            stack: error.stack,
+            expiring: [],
+            expired: []
+          }), { 
+            status: 500,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
       }
     }
 
