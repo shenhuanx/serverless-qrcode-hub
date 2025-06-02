@@ -8,7 +8,7 @@ let isInitialized = false;
 const banPath = [
   'login', 'admin', '__total_count',
   // static files
-  'admin.html',
+  'qrcode.html',
   // 'login.html',
   'daisyui@5.css', 'tailwindcss@4.js',
   'qr-code-styling.js', 'zxing.js',
@@ -419,7 +419,7 @@ export default {
 
     // 根目录直接跳转到管理后台
     if (path === '') {
-      const response = await env.ASSETS.fetch(new Request(url.origin + '/admin.html'));
+      const response = await env.ASSETS.fetch(new Request(url.origin + '/qrcode.html'));
       return response;
     }
 
