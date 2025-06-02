@@ -6,18 +6,18 @@ compatibility_date = "2025-03-10"
 binding = "DB"
 database_name = "qrcode_hub"
 # 注意：将下面的 id 替换为你自己拷贝的 D1 存储的 id 才能正常使用！
-database_id = "fc930ddf-add3-4991-93d4-3f145cce203f"
+database_id = "8ab66f3d-64f3-4b57-b8bf-97d0be19f7ea"
 
 [triggers]
 crons = ["0 2 */1 * *"]
 
 [[env.dev.d1_databases]]
 binding = "DB"
-database_name = "qrcode_hub_dev"
-database_id = "fc930ddf-add3-4991-93d4-3f145cce203f"
+database_name = "qrcode_hub"
+database_id = "8ab66f3d-64f3-4b57-b8bf-97d0be19f7ea"
 
-[env.dev.triggers]
-crons = ["*/10 * * * * *"]
+# [env.dev.triggers]
+# crons = ["*/10 * * * * *"]
 
 [assets]
 directory = "./dist"
