@@ -14,7 +14,7 @@ const banPath = [
   'daisyui@5.css', 'tailwindcss@4.js',
   'qr-code-styling.js', 'zxing.js',
   'robots.txt', 'wechat.svg',
-  'favicon.svg',
+  'favicon.ico',
 ];
 
 // Cookie related functions
