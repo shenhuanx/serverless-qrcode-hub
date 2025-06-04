@@ -6,7 +6,8 @@ let DB;
 let isInitialized = false;
 
 const banPath = [
-  'login', 'admin', '__total_count',
+  'login.html', '__total_count',
+  'ad.html',
   // static files
   'qrcode.html',
   // 'login.html',
@@ -189,7 +190,7 @@ async function getExpiringMappings(userId) {
   // 获取当前时间（使用本地时间）
   const now = new Date();
   console.log('当前时间:', now.toISOString());
-
+  
   // 获取今天的开始时间（00:00:00）
   const todayStart = new Date(now);
   todayStart.setHours(0, 0, 0, 0);
@@ -254,13 +255,13 @@ async function getExpiringMappings(userId) {
   };
   
   if (results.results) {
-    for (const row of results.results) {
-      const mapping = {
-        path: row.path,
-        name: row.name,
-        target: row.target,
-        expiry: row.expiry,
-        enabled: row.enabled === 1,
+  for (const row of results.results) {
+    const mapping = {
+      path: row.path,
+      name: row.name,
+      target: row.target,
+      expiry: row.expiry,
+      enabled: row.enabled === 1,
         isWechat: row.is_wechat === 1,
         qrCodeData: row.qr_code_data
       };
@@ -273,12 +274,12 @@ async function getExpiringMappings(userId) {
         isExpired: new Date(mapping.expiry) < todayStart
       });
 
-      if (row.status === 'expired') {
-        mappings.expired.push(mapping);
-      } else {
-        mappings.expiring.push(mapping);
-      }
+    if (row.status === 'expired') {
+      mappings.expired.push(mapping);
+    } else {
+      mappings.expiring.push(mapping);
     }
+  }
   }
 
   console.log('处理后的映射:', mappings);
@@ -423,406 +424,651 @@ export default {
       return response;
     }
 
+    // 处理登录API
+    if (path === 'api/login' && request.method === 'POST') {
+        try {
+            const body = await request.json();
+            console.log('请求体:', body);
+            const password = body.password;
+            console.log('提交的密码:', password);
+            console.log('环境变量中的密码:', env.ADMIN_PASSWORD);
+            console.log('环境变量类型:', typeof env.ADMIN_PASSWORD);
+            console.log('密码比较结果:', password === env.ADMIN_PASSWORD);
+            
+            if (!env.ADMIN_PASSWORD) {
+                console.error('环境变量 ADMIN_PASSWORD 未设置');
+                return new Response(JSON.stringify({ 
+                    error: '服务器配置错误'
+                }), {
+                    status: 500,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            
+            // 移除可能的空白字符
+            const cleanPassword = password.trim();
+            const cleanEnvPassword = env.ADMIN_PASSWORD.trim();
+            
+            if (cleanPassword === cleanEnvPassword) {
+                console.log('密码验证成功');
+                // 密码正确，设置cookie并返回成功响应
+                return new Response(JSON.stringify({ success: true }), {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Set-Cookie': `auth=${cleanEnvPassword}; Path=/; SameSite=Strict; Max-Age=86400`
+                    }
+                });
+            } else {
+                console.log('密码验证失败');
+                console.log('清理后的密码:', cleanPassword);
+                console.log('清理后的环境变量密码:', cleanEnvPassword);
+                return new Response(JSON.stringify({ 
+                    error: '密码错误，请重试'
+                }), {
+                    status: 401,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+        } catch (error) {
+            console.error('登录处理失败:', error);
+            return new Response(JSON.stringify({ 
+                error: '登录失败，请重试'
+            }), {
+                status: 500,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+    }
+
+    // 处理退出API
+    if (path === 'api/logout' && request.method === 'POST') {
+        return new Response(JSON.stringify({ success: true }), {
+            headers: {
+                'Content-Type': 'application/json',
+                'Set-Cookie': 'auth=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'
+            }
+        });
+    }
+
+    // 处理静态文件
+    if (path.endsWith('.html') || path.endsWith('.css') || path.endsWith('.js')) {
+        // 如果是 ad.html，需要先验证密码
+        if (path === 'ad.html') {
+            const cookie = request.headers.get('Cookie') || '';
+            console.log('收到的Cookie:', cookie);
+            const authCookie = cookie.split(';').find(c => c.trim().startsWith('auth='));
+            console.log('找到的auth cookie:', authCookie);
+            const authValue = authCookie ? authCookie.split('=')[1].trim() : null;
+            console.log('提取的auth值:', authValue);
+            console.log('环境变量密码:', env.ADMIN_PASSWORD);
+            console.log('比较结果:', authValue === env.ADMIN_PASSWORD);
+
+            if (authValue !== env.ADMIN_PASSWORD) {
+                console.log('未授权访问广告管理页面，重定向到登录页');
+                return Response.redirect(new URL('/login.html', request.url), 302);
+            }
+        }
+        return env.ASSETS.fetch(request);
+    }
+
     // API 路由处理
     if (path.startsWith('api/')) {
-      // 获取浏览器指纹
-      const fingerprint = request.headers.get('X-Fingerprint');
-      if (!fingerprint) {
-        return new Response('Fingerprint required', { status: 400 });
-      }
+        // 广告相关的API需要密码验证
+        if (path.startsWith('api/ad')) {
+            // 获取广告列表不需要密码验证
+            if (path === 'api/ads' && request.method === 'GET') {
+                try {
+                    console.log('正在获取广告列表...');
+                    const { results } = await env.DB.prepare(`
+                        SELECT * FROM ads 
+                        ORDER BY created_at DESC
+                    `).all();
+                    
+                    console.log('广告列表结果:', results);
+                    
+                    return new Response(JSON.stringify(results || []), {
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                } catch (error) {
+                    console.error('获取广告列表失败:', error);
+                    return new Response(JSON.stringify({ error: '获取广告列表失败' }), { 
+                        status: 500,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+            }
 
-      // 清理指纹值，移除可能的重复和空格
-      const cleanFingerprint = fingerprint.split(',')[0].trim();
-      console.log('清理后的指纹:', cleanFingerprint);
+            // 其他广告相关的API需要验证cookie
+            const cookie = request.headers.get('Cookie') || '';
+            console.log('API请求收到的Cookie:', cookie);
+            const authCookie = cookie.split(';').find(c => c.trim().startsWith('auth='));
+            console.log('API请求找到的auth cookie:', authCookie);
+            const authValue = authCookie ? authCookie.split('=')[1].trim() : null;
+            console.log('API请求提取的auth值:', authValue);
+            console.log('API请求环境变量密码:', env.ADMIN_PASSWORD);
+            console.log('API请求比较结果:', authValue === env.ADMIN_PASSWORD);
 
-      // 获取或创建用户
-      const userId = await getOrCreateUser(cleanFingerprint, env);
-      console.log('当前用户ID:', userId);
+            if (authValue !== env.ADMIN_PASSWORD) {
+                return new Response(JSON.stringify({ error: '未授权访问' }), { 
+                    status: 401,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
 
-      // 获取映射列表
-      if (path === 'api/mappings' && request.method === 'GET') {
-        try {
-          // 获取该用户的映射列表
-          const { results } = await env.DB.prepare(
-            'SELECT * FROM mappings WHERE user_id = ? ORDER BY created_at DESC'
-          ).bind(userId).all();
-          
-          console.log('查询结果:', results);
-          
-          // 转换数据格式
-          const mappings = {};
-          for (const row of results) {
-            mappings[row.path] = {
-              target: row.target,
-              name: row.name,
-              expiry: row.expiry,
-              enabled: row.enabled === 1,
-              isWechat: row.is_wechat === 1,
-              qrCodeData: row.qr_code_data
-            };
-          }
-          
-          return new Response(JSON.stringify({ mappings }), {
-            headers: { 'Content-Type': 'application/json' }
-          });
-        } catch (error) {
-          console.error('获取映射列表失败:', error);
-          return new Response(JSON.stringify({ 
-            error: '获取映射列表失败' 
-          }), { 
-            status: 500,
-            headers: { 'Content-Type': 'application/json' }
-          });
-        }
-      }
+            // 处理广告相关的API请求
+            if (path === 'api/ad' && request.method === 'POST') {
+                try {
+                    const ad = await request.json();
+                    console.log('保存广告数据:', ad);
 
-      // 获取单个映射
-      if (path === 'api/mapping' && request.method === 'GET') {
-        try {
-          const url = new URL(request.url);
-          const mappingPath = url.searchParams.get('path');
-          
-          if (!mappingPath) {
-            return new Response(JSON.stringify({ 
-              error: '缺少映射路径参数' 
-            }), { 
-              status: 400,
-              headers: { 'Content-Type': 'application/json' }
-            });
-          }
+                    // 保存广告数据到数据库
+                    const { success, error } = await env.DB.prepare(`
+                        INSERT INTO ads (position, content, enabled)
+                        VALUES (?, ?, ?)
+                    `).bind(
+                        ad.position,
+                        ad.content,
+                        ad.enabled ? 1 : 0
+                    ).run();
 
-          // 获取浏览器指纹
-          const fingerprint = request.headers.get('X-Fingerprint');
-          if (!fingerprint) {
-            return new Response('Fingerprint required', { status: 400 });
-          }
+                    if (!success) {
+                        console.error('保存广告失败:', error);
+                        return new Response(JSON.stringify({ error: '保存广告失败' }), {
+                            status: 500,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
 
-          // 清理指纹值
-          const cleanFingerprint = fingerprint.split(',')[0].trim();
-          
-          // 获取用户ID
-          const userId = await getOrCreateUser(cleanFingerprint, env);
-          console.log('当前用户ID:', userId);
+                    return new Response(JSON.stringify({ success: true }), {
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                } catch (error) {
+                    console.error('处理广告请求失败:', error);
+                    return new Response(JSON.stringify({ error: '处理请求失败' }), {
+                        status: 500,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+            }
 
-          // 获取映射
-          const { results } = await env.DB.prepare(
-            'SELECT * FROM mappings WHERE path = ? AND user_id = ?'
-          ).bind(mappingPath, userId).all();
+            // 处理广告删除请求
+            if (path === 'api/ad' && request.method === 'DELETE') {
+                try {
+                    const { id } = await request.json();
+                    console.log('删除广告:', id);
 
-          if (!results || results.length === 0) {
-            return new Response(JSON.stringify({ 
-              error: '映射不存在或不属于当前用户' 
-            }), { 
-              status: 404,
-              headers: { 'Content-Type': 'application/json' }
-            });
-          }
+                    const { success, error } = await env.DB.prepare(`
+                        DELETE FROM ads WHERE id = ?
+                    `).bind(id).run();
 
-          const mapping = results[0];
-          return new Response(JSON.stringify({
-            path: mapping.path,
-            target: mapping.target,
-            name: mapping.name,
-            expiry: mapping.expiry,
-            enabled: mapping.enabled === 1,
-            isWechat: mapping.is_wechat === 1,
-            qrCodeData: mapping.qr_code_data
-          }), {
-            headers: { 'Content-Type': 'application/json' }
-          });
-        } catch (error) {
-          console.error('获取映射失败:', error);
-          return new Response(JSON.stringify({ 
-            error: '获取映射失败' 
-          }), { 
-            status: 500,
-            headers: { 'Content-Type': 'application/json' }
-          });
-        }
-      }
+                    if (!success) {
+                        console.error('删除广告失败:', error);
+                        return new Response(JSON.stringify({ error: '删除广告失败' }), {
+                            status: 500,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
 
-      // 添加映射
-      if (path === 'api/mapping' && request.method === 'POST') {
-        try {
-          const mapping = await request.json();
-          
-          // 检查短链名是否在禁用列表中
-          if (banPath.includes(mapping.path)) {
-            return new Response(JSON.stringify({ 
-              error: '该短链名已被系统保留，请使用其他名称' 
-            }), { 
-              status: 400,
-              headers: { 'Content-Type': 'application/json' }
-            });
-          }
+                    return new Response(JSON.stringify({ success: true }), {
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                } catch (error) {
+                    console.error('处理删除请求失败:', error);
+                    return new Response(JSON.stringify({ error: '处理请求失败' }), {
+                        status: 500,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+            }
 
-          // 检查短链名是否已存在
-          const existing = await env.DB.prepare(
-            'SELECT path FROM mappings WHERE path = ?'
-          ).bind(mapping.path).first();
+            // 处理广告更新请求
+            if (path === 'api/ad' && request.method === 'PUT') {
+                try {
+                    const ad = await request.json();
+                    console.log('更新广告数据:', ad);
 
-          if (existing) {
-            return new Response(JSON.stringify({ 
-              error: '该短链名已被使用，请使用其他名称' 
-            }), { 
-              status: 400,
-              headers: { 'Content-Type': 'application/json' }
-            });
-          }
+                    const { success, error } = await env.DB.prepare(`
+                        UPDATE ads 
+                        SET position = ?, content = ?, enabled = ?
+                        WHERE id = ?
+                    `).bind(
+                        ad.position,
+                        ad.content,
+                        ad.enabled ? 1 : 0,
+                        ad.id
+                    ).run();
 
-          const { success, error } = await env.DB.prepare(
-            'INSERT INTO mappings (path, target, name, expiry, enabled, is_wechat, qr_code_data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-          ).bind(
-            mapping.path,
-            mapping.target,
-            mapping.name || null,
-            mapping.expiry || null,
-            mapping.enabled ? 1 : 0,
-            mapping.isWechat ? 1 : 0,
-            mapping.qrCodeData || null,
-            userId
-          ).run();
+                    if (!success) {
+                        console.error('更新广告失败:', error);
+                        return new Response(JSON.stringify({ error: '更新广告失败' }), {
+                            status: 500,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
 
-          if (!success) {
-            console.error('数据库错误:', error);
-            return new Response(JSON.stringify({ 
-              error: '添加失败，请重试' 
-            }), { 
-              status: 500,
-              headers: { 'Content-Type': 'application/json' }
-            });
-          }
+                    return new Response(JSON.stringify({ success: true }), {
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                } catch (error) {
+                    console.error('处理更新请求失败:', error);
+                    return new Response(JSON.stringify({ error: '处理请求失败' }), {
+                        status: 500,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+            }
 
-          return new Response(JSON.stringify({ success: true }), {
-            headers: { 'Content-Type': 'application/json' }
-          });
-        } catch (error) {
-          console.error('添加映射失败:', error);
-          return new Response(JSON.stringify({ 
-            error: '添加失败，请检查输入数据是否正确' 
-          }), { 
-            status: 500,
-            headers: { 'Content-Type': 'application/json' }
-          });
-        }
-      }
+            // 处理获取单个广告请求
+            if (path.startsWith('api/ad/') && request.method === 'GET') {
+                try {
+                    const id = path.split('/').pop();
+                    console.log('获取广告:', id);
 
-      // 更新映射
-      if (path === 'api/mapping' && request.method === 'PUT') {
-        try {
-          const mapping = await request.json();
-          console.log('更新映射请求数据:', mapping);
+                    const { results } = await env.DB.prepare(`
+                        SELECT * FROM ads WHERE id = ?
+                    `).bind(id).all();
 
-          // 获取浏览器指纹
-          const fingerprint = request.headers.get('X-Fingerprint');
-          if (!fingerprint) {
-            return new Response('Fingerprint required', { status: 400 });
-          }
+                    if (!results || results.length === 0) {
+                        return new Response(JSON.stringify({ error: '广告不存在' }), {
+                            status: 404,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
 
-          // 清理指纹值
-          const cleanFingerprint = fingerprint.split(',')[0].trim();
-          
-          // 获取用户ID
-          const userId = await getOrCreateUser(cleanFingerprint, env);
-          console.log('当前用户ID:', userId);
-
-          // 检查映射是否存在且属于当前用户
-          const { results: existingMapping } = await env.DB.prepare(
-            'SELECT * FROM mappings WHERE path = ? AND user_id = ?'
-          ).bind(mapping.path, userId).all();
-
-          if (!existingMapping || existingMapping.length === 0) {
-            return new Response(JSON.stringify({ 
-              error: '映射不存在或不属于当前用户' 
-            }), { 
-              status: 404,
-              headers: { 'Content-Type': 'application/json' }
-            });
-          }
-
-          // 更新映射
-          const { success, error } = await env.DB.prepare(
-            'UPDATE mappings SET target = ?, name = ?, expiry = ?, enabled = ?, is_wechat = ?, qr_code_data = ? WHERE path = ? AND user_id = ?'
-          ).bind(
-            mapping.target,
-            mapping.name || null,
-            mapping.expiry || null,
-            mapping.enabled ? 1 : 0,
-            mapping.isWechat ? 1 : 0,
-            mapping.qrCodeData || null,
-            mapping.path,
-            userId
-          ).run();
-
-          if (!success) {
-            console.error('更新映射失败:', error);
-            return new Response(JSON.stringify({ 
-              error: '更新失败，请重试' 
-            }), { 
-              status: 500,
-              headers: { 'Content-Type': 'application/json' }
-            });
-          }
-
-          return new Response(JSON.stringify({ success: true }), {
-            headers: { 'Content-Type': 'application/json' }
-          });
-        } catch (error) {
-          console.error('更新映射失败:', error);
-          return new Response(JSON.stringify({ 
-            error: '更新失败，请检查输入数据是否正确' 
-          }), { 
-            status: 500,
-            headers: { 'Content-Type': 'application/json' }
-          });
-        }
-      }
-
-      // 删除映射
-      if (path === 'api/mapping' && request.method === 'DELETE') {
-        const { path: mappingPath } = await request.json();
-        const { success } = await env.DB.prepare(
-          'DELETE FROM mappings WHERE path = ? AND user_id = ?'
-        ).bind(mappingPath, userId).run();
-
-        if (!success) {
-          return new Response('Failed to delete mapping', { status: 500 });
+                    return new Response(JSON.stringify(results[0]), {
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                } catch (error) {
+                    console.error('获取广告失败:', error);
+                    return new Response(JSON.stringify({ error: '获取广告失败' }), {
+                        status: 500,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+            }
         }
 
-        return new Response(JSON.stringify({ success: true }));
-      }
+        // 其他API需要指纹验证
+        const fingerprint = request.headers.get('X-Fingerprint');
+        if (!fingerprint) {
+            return new Response(JSON.stringify({ error: 'Fingerprint required' }), { 
+                status: 400,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
 
-      // 获取过期和即将过期的映射
-      if (path === 'api/expiring-mappings' && request.method === 'GET') {
-        try {
-          console.log('开始获取过期映射，用户ID:', userId);
-          
-          // 获取当前时间（使用本地时间）
-          const now = new Date();
-          console.log('当前时间:', now.toISOString());
+        // 清理指纹值，移除可能的重复和空格
+        const cleanFingerprint = fingerprint.split(',')[0].trim();
+        console.log('清理后的指纹:', cleanFingerprint);
 
-          // 获取今天的开始时间（00:00:00）
-          const todayStart = new Date(now);
-          todayStart.setHours(0, 0, 0, 0);
-          console.log('今天开始时间:', todayStart.toISOString());
+        // 获取或创建用户
+        const userId = await getOrCreateUser(cleanFingerprint, env);
+        console.log('当前用户ID:', userId);
 
-          // 获取3天后的结束时间（23:59:59）
-          const threeDaysLater = new Date(todayStart);
-          threeDaysLater.setDate(todayStart.getDate() + 3);
-          threeDaysLater.setHours(23, 59, 59, 999);
-          console.log('3天后结束时间:', threeDaysLater.toISOString());
-
-          // 先检查用户是否存在
-          const userCheck = await DB.prepare(
-            'SELECT id FROM users WHERE id = ?'
-          ).bind(userId).first();
-          
-          console.log('用户检查结果:', userCheck);
-
-          if (!userCheck) {
-            throw new Error('用户不存在');
-          }
-
-          // 使用单个查询获取所有过期和即将过期的映射
-          const query = `
-            WITH categorized_mappings AS (
-              SELECT 
-                path, name, target, expiry, enabled, is_wechat, qr_code_data,
-                CASE 
-                  WHEN datetime(expiry) < datetime(?) THEN 'expired'
-                  WHEN datetime(expiry) <= datetime(?) THEN 'expiring'
-                END as status
-              FROM mappings 
-              WHERE expiry IS NOT NULL 
-                AND datetime(expiry) <= datetime(?) 
-                AND enabled = 1
-                AND user_id = ?
-            )
-            SELECT * FROM categorized_mappings
-            ORDER BY expiry ASC
-          `;
-
-          console.log('SQL查询:', query);
-          console.log('查询参数:', [
-            todayStart.toISOString(),
-            threeDaysLater.toISOString(),
-            threeDaysLater.toISOString(),
-            userId
-          ]);
-
-          const results = await DB.prepare(query).bind(
-            todayStart.toISOString(),
-            threeDaysLater.toISOString(),
-            threeDaysLater.toISOString(),
-            userId
-          ).all();
-
-          console.log('查询结果:', results);
-
-          const mappings = {
-            expiring: [],
-            expired: []
-          };
-          
-          if (results.results) {
-            for (const row of results.results) {
-              const mapping = {
-                path: row.path,
-                name: row.name,
+        // 获取映射列表
+        if (path === 'api/mappings' && request.method === 'GET') {
+          try {
+            // 获取该用户的映射列表
+            const { results } = await env.DB.prepare(
+              'SELECT * FROM mappings WHERE user_id = ? ORDER BY created_at DESC'
+            ).bind(userId).all();
+            
+            console.log('查询结果:', results);
+            
+            // 转换数据格式
+            const mappings = {};
+            for (const row of results) {
+              mappings[row.path] = {
                 target: row.target,
+                name: row.name,
                 expiry: row.expiry,
                 enabled: row.enabled === 1,
                 isWechat: row.is_wechat === 1,
                 qrCodeData: row.qr_code_data
               };
-
-              // 打印每个映射的过期时间和状态
-              console.log('映射:', {
-                path: mapping.path,
-                expiry: mapping.expiry,
-                status: row.status,
-                isExpired: new Date(mapping.expiry) < todayStart
-              });
-
-              if (row.status === 'expired') {
-                mappings.expired.push(mapping);
-              } else {
-                mappings.expiring.push(mapping);
-              }
             }
+            
+            return new Response(JSON.stringify({ mappings }), {
+              headers: { 'Content-Type': 'application/json' }
+            });
+          } catch (error) {
+            console.error('获取映射列表失败:', error);
+            return new Response(JSON.stringify({ 
+              error: '获取映射列表失败' 
+            }), { 
+              status: 500,
+              headers: { 'Content-Type': 'application/json' }
+            });
           }
+        }
 
-          console.log('处理后的映射:', mappings);
-          
-          // 确保返回正确的数据格式
-          const response = {
-            expiring: mappings.expiring || [],
-            expired: mappings.expired || []
-          };
-          
-          return new Response(JSON.stringify(response), {
-            headers: { 'Content-Type': 'application/json' }
-          });
+        // 获取单个映射
+        if (path === 'api/mapping' && request.method === 'GET') {
+          try {
+            const url = new URL(request.url);
+            const mappingPath = url.searchParams.get('path');
+            
+            if (!mappingPath) {
+              return new Response(JSON.stringify({ 
+                error: '缺少映射路径参数' 
+              }), { 
+                status: 400,
+                headers: { 'Content-Type': 'application/json' }
+              });
+            }
+
+            // 获取映射
+            const { results } = await env.DB.prepare(
+              'SELECT * FROM mappings WHERE path = ? AND user_id = ?'
+            ).bind(mappingPath, userId).all();
+
+            if (!results || results.length === 0) {
+              return new Response(JSON.stringify({ 
+                error: '映射不存在或不属于当前用户' 
+              }), { 
+                status: 404,
+                headers: { 'Content-Type': 'application/json' }
+              });
+            }
+
+            const mapping = results[0];
+            return new Response(JSON.stringify({
+              path: mapping.path,
+              target: mapping.target,
+              name: mapping.name,
+              expiry: mapping.expiry,
+              enabled: mapping.enabled === 1,
+              isWechat: mapping.is_wechat === 1,
+              qrCodeData: mapping.qr_code_data
+            }), {
+              headers: { 'Content-Type': 'application/json' }
+            });
+          } catch (error) {
+            console.error('获取映射失败:', error);
+            return new Response(JSON.stringify({ 
+              error: '获取映射失败' 
+            }), { 
+              status: 500,
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+        }
+
+        // 添加映射
+        if (path === 'api/mapping' && request.method === 'POST') {
+          try {
+            const mapping = await request.json();
+            
+            // 检查短链名是否在禁用列表中
+            if (banPath.includes(mapping.path)) {
+              return new Response(JSON.stringify({ 
+                error: '该短链名已被系统保留，请使用其他名称' 
+              }), { 
+                  status: 400,
+                  headers: { 'Content-Type': 'application/json' }
+                });
+              }
+
+            // 检查短链名是否已存在
+            const existing = await env.DB.prepare(
+              'SELECT path FROM mappings WHERE path = ?'
+            ).bind(mapping.path).first();
+
+            if (existing) {
+              return new Response(JSON.stringify({ 
+                error: '该短链名已被使用，请使用其他名称' 
+              }), { 
+                status: 400,
+                  headers: { 'Content-Type': 'application/json' }
+                });
+              }
+
+            const { success, error } = await env.DB.prepare(
+              'INSERT INTO mappings (path, target, name, expiry, enabled, is_wechat, qr_code_data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+            ).bind(
+              mapping.path,
+              mapping.target,
+              mapping.name || null,
+              mapping.expiry || null,
+              mapping.enabled ? 1 : 0,
+              mapping.isWechat ? 1 : 0,
+              mapping.qrCodeData || null,
+              userId
+            ).run();
+
+            if (!success) {
+              console.error('数据库错误:', error);
+              return new Response(JSON.stringify({ 
+                error: '添加失败，请重试' 
+              }), { 
+                status: 500,
+                headers: { 'Content-Type': 'application/json' }
+              });
+            }
+
+              return new Response(JSON.stringify({ success: true }), {
+              headers: { 'Content-Type': 'application/json' }
+            });
+          } catch (error) {
+            console.error('添加映射失败:', error);
+            return new Response(JSON.stringify({ 
+              error: '添加失败，请检查输入数据是否正确' 
+            }), { 
+              status: 500,
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+        }
+
+        // 更新映射
+        if (path === 'api/mapping' && request.method === 'PUT') {
+          try {
+            const mapping = await request.json();
+            console.log('更新映射请求数据:', mapping);
+
+            // 获取映射
+            const { results: existingMapping } = await env.DB.prepare(
+              'SELECT * FROM mappings WHERE path = ? AND user_id = ?'
+            ).bind(mapping.path, userId).all();
+
+            if (!existingMapping || existingMapping.length === 0) {
+              return new Response(JSON.stringify({ 
+                error: '映射不存在或不属于当前用户' 
+              }), { 
+                status: 404,
+                headers: { 'Content-Type': 'application/json' }
+              });
+            }
+
+            // 更新映射
+            const { success, error } = await env.DB.prepare(
+              'UPDATE mappings SET target = ?, name = ?, expiry = ?, enabled = ?, is_wechat = ?, qr_code_data = ? WHERE path = ? AND user_id = ?'
+            ).bind(
+              mapping.target,
+              mapping.name || null,
+              mapping.expiry || null,
+              mapping.enabled ? 1 : 0,
+              mapping.isWechat ? 1 : 0,
+              mapping.qrCodeData || null,
+              mapping.path,
+              userId
+            ).run();
+
+            if (!success) {
+              console.error('更新映射失败:', error);
+              return new Response(JSON.stringify({ 
+                error: '更新失败，请重试' 
+              }), { 
+                status: 500,
+                headers: { 'Content-Type': 'application/json' }
+              });
+            }
+
+              return new Response(JSON.stringify({ success: true }), {
+                headers: { 'Content-Type': 'application/json' }
+              });
         } catch (error) {
-          console.error('获取过期映射失败:', error);
-          // 返回更详细的错误信息
-          return new Response(JSON.stringify({ 
-            error: '获取过期映射失败',
-            details: error.message,
-            stack: error.stack,
-            expiring: [],
-            expired: []
-          }), { 
-            status: 500,
+            console.error('更新映射失败:', error);
+          return new Response(JSON.stringify({
+              error: '更新失败，请检查输入数据是否正确' 
+          }), {
+              status: 500,
             headers: { 'Content-Type': 'application/json' }
           });
         }
       }
-    }
 
-    // Handle static files
-    if (path.endsWith('.html') || path.endsWith('.css') || path.endsWith('.js')) {
-      return env.ASSETS.fetch(request);
+        // 删除映射
+        if (path === 'api/mapping' && request.method === 'DELETE') {
+          const { path: mappingPath } = await request.json();
+          const { success } = await env.DB.prepare(
+            'DELETE FROM mappings WHERE path = ? AND user_id = ?'
+          ).bind(mappingPath, userId).run();
+
+          if (!success) {
+            return new Response('Failed to delete mapping', { status: 500 });
+          }
+
+          return new Response(JSON.stringify({ success: true }));
+        }
+
+        // 获取过期和即将过期的映射
+        if (path === 'api/expiring-mappings' && request.method === 'GET') {
+          try {
+            console.log('开始获取过期映射，用户ID:', userId);
+            
+            // 获取当前时间（使用本地时间）
+            const now = new Date();
+            console.log('当前时间:', now.toISOString());
+
+            // 获取今天的开始时间（00:00:00）
+            const todayStart = new Date(now);
+            todayStart.setHours(0, 0, 0, 0);
+            console.log('今天开始时间:', todayStart.toISOString());
+
+            // 获取3天后的结束时间（23:59:59）
+            const threeDaysLater = new Date(todayStart);
+            threeDaysLater.setDate(todayStart.getDate() + 3);
+            threeDaysLater.setHours(23, 59, 59, 999);
+            console.log('3天后结束时间:', threeDaysLater.toISOString());
+
+            // 先检查用户是否存在
+            const userCheck = await DB.prepare(
+              'SELECT id FROM users WHERE id = ?'
+            ).bind(userId).first();
+            
+            console.log('用户检查结果:', userCheck);
+
+            if (!userCheck) {
+              throw new Error('用户不存在');
+            }
+
+            // 使用单个查询获取所有过期和即将过期的映射
+            const query = `
+              WITH categorized_mappings AS (
+                SELECT 
+                  path, name, target, expiry, enabled, is_wechat, qr_code_data,
+                  CASE 
+                    WHEN datetime(expiry) < datetime(?) THEN 'expired'
+                    WHEN datetime(expiry) <= datetime(?) THEN 'expiring'
+                  END as status
+                FROM mappings 
+                WHERE expiry IS NOT NULL 
+                  AND datetime(expiry) <= datetime(?) 
+                  AND enabled = 1
+                  AND user_id = ?
+              )
+              SELECT * FROM categorized_mappings
+              ORDER BY expiry ASC
+            `;
+
+            console.log('SQL查询:', query);
+            console.log('查询参数:', [
+              todayStart.toISOString(),
+              threeDaysLater.toISOString(),
+              threeDaysLater.toISOString(),
+              userId
+            ]);
+
+            const results = await DB.prepare(query).bind(
+              todayStart.toISOString(),
+              threeDaysLater.toISOString(),
+              threeDaysLater.toISOString(),
+              userId
+            ).all();
+
+            console.log('查询结果:', results);
+
+            const mappings = {
+              expiring: [],
+              expired: []
+            };
+            
+            if (results.results) {
+              for (const row of results.results) {
+                const mapping = {
+                  path: row.path,
+                  name: row.name,
+                  target: row.target,
+                  expiry: row.expiry,
+                  enabled: row.enabled === 1,
+                  isWechat: row.is_wechat === 1,
+                  qrCodeData: row.qr_code_data
+                };
+
+                // 打印每个映射的过期时间和状态
+                console.log('映射:', {
+                  path: mapping.path,
+                  expiry: mapping.expiry,
+                  status: row.status,
+                  isExpired: new Date(mapping.expiry) < todayStart
+                });
+
+                if (row.status === 'expired') {
+                  mappings.expired.push(mapping);
+                } else {
+                  mappings.expiring.push(mapping);
+                }
+              }
+            }
+
+            console.log('处理后的映射:', mappings);
+            
+            // 确保返回正确的数据格式
+            const response = {
+              expiring: mappings.expiring || [],
+              expired: mappings.expired || []
+            };
+            
+            return new Response(JSON.stringify(response), {
+              headers: { 'Content-Type': 'application/json' }
+            });
+          } catch (error) {
+            console.error('获取过期映射失败:', error);
+            // 返回更详细的错误信息
+            return new Response(JSON.stringify({ 
+              error: '获取过期映射失败',
+              details: error.message,
+              stack: error.stack,
+              expiring: [],
+              expired: []
+            }), { 
+              status: 500,
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+        }
+
+        // 处理 OPTIONS 请求
+        if (request.method === 'OPTIONS') {
+          return new Response(null, {
+            headers: {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+              'Access-Control-Allow-Headers': 'Content-Type'
+            }
+          });
+        }
     }
 
     // Handle short link redirection

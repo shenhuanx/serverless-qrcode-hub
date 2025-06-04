@@ -22,3 +22,6 @@ database_id = "8ab66f3d-64f3-4b57-b8bf-97d0be19f7ea"
 [assets]
 directory = "./dist"
 binding = "ASSETS"
+
+[env.dev.vars]
+ADMIN_PASSWORD = "Wsad1234"  # 开发环境密码
